@@ -27,7 +27,7 @@ from flask import (
 
 # Config
 ENV_FILE = ".env"
-BOT_SCRIPT = "bot_dca_drop_on_drop.py"  # adjust if your bot filename differs
+BOT_SCRIPT = "bot_dca_exit.py"  # adjust if your bot filename differs
 PURCHASES_DEFAULT = "purchases.json"
 
 # Keys exposed in web form (order matters for display)
