@@ -1,0 +1,164 @@
+```html
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <title>PAMT Web Dashboard</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="container">
+    <h1>PAMT — Web Dashboard</h1>
+
+    <section class="panel">
+      <h2>Environment (.env)</h2>
+      <form id="envForm">
+        <div class="grid">
+          <!-- fields inserted by JS -->
+        </div>
+        <div class="controls">
+          <button type="button" id="saveBtn">Save .env</button>
+          <button type="button" id="reloadBtn">Reload</button>
+          <button type="button" id="resetBtn">Reset Template</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="panel">
+      <h2>Bot Controls</h2>
+      <div class="controls">
+        <button id="startBtn">Start Bot</button>
+        <button id="stopBtn" disabled>Stop Bot</button>
+        <button id="downloadPurchasesBtn">Download purchases.json</button>
+        <span id="statusLabel" class="status">Status: unknown</span>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Bot Log</h2>
+      <pre id="logArea" class="log"></pre>
+    </section>
+
+    <section class="panel">
+      <h2>Purchases (preview)</h2>
+      <pre id="purchasesArea" class="log small"></pre>
+    </section>
+
+    <footer>
+      <small>Use DRY_RUN=true for testing. Do not expose API keys publicly.</small>
+    </footer>
+  </div>
+
+<script>
+const ENV_KEYS = JSON.parse(`["UPBIT_ACCESS_KEY","UPBIT_SECRET_KEY","DRY_RUN","SIM_KRW_BALANCE","INSTALLMENTS","MIN_KRW_ORDER","TOTAL_INVEST_FRACTION","TOTAL_INVEST_KRW","ALLOCATIONS","DROP_PCT","DROP_PCT_PER_COIN","INITIAL_BUY","MONITOR_INTERVAL_MIN","MONITOR_INTERVAL_SEC","TARGET_PROFIT_PCT","TARGET_PROFIT_KRW","SELL_FRACTION","PURCHASES_FILE"]`);
+
+async function loadEnv() {
+  const res = await fetch('/api/load_env');
+  const data = await res.json();
+  const grid = document.querySelector('.grid');
+  grid.innerHTML = '';
+  for (const k of ENV_KEYS) {
+    const val = data[k] || '';
+    const div = document.createElement('div');
+    div.className = 'field';
+    div.innerHTML = `<label>${k}</label><input type="text" name="${k}" value="${val}" />`;
+    grid.appendChild(div);
+  }
+}
+
+async function saveEnv() {
+  const inputs = document.querySelectorAll('.grid input');
+  const payload = {};
+  inputs.forEach(inp => payload[inp.name] = inp.value);
+  const res = await fetch('/api/save_env', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)
+  });
+  const j = await res.json();
+  if (j.ok) alert('.env saved');
+  else alert('Save failed: ' + (j.error || 'unknown'));
+}
+
+async function resetTemplate() {
+  if (!confirm('Reset .env to default template?')) return;
+  const res = await fetch('/api/reset_template', {method: 'POST'});
+  const j = await res.json();
+  if (j.ok) {
+    loadEnv();
+    alert('Reset done');
+  } else alert('Reset failed: ' + (j.error || 'unknown'));
+}
+
+async function startBot() {
+  const res = await fetch('/api/start', {method: 'POST'});
+  const j = await res.json();
+  alert(j.message || JSON.stringify(j));
+  updateStatus();
+}
+
+async function stopBot() {
+  const res = await fetch('/api/stop', {method: 'POST'});
+  const j = await res.json();
+  alert(j.message || JSON.stringify(j));
+  updateStatus();
+}
+
+async function updateStatus() {
+  const res = await fetch('/api/status');
+  const s = await res.json();
+  const label = document.getElementById('statusLabel');
+  label.textContent = 'Status: ' + (s.running ? 'running' : 'stopped') + (s.returncode !== null ? ' (rc='+s.returncode+')' : '');
+  document.getElementById('startBtn').disabled = s.running;
+  document.getElementById('stopBtn').disabled = !s.running;
+}
+
+function streamLogs() {
+  const logArea = document.getElementById('logArea');
+  const evt = new EventSource('/stream-logs');
+  evt.onmessage = function(e) {
+    if (!e.data) return;
+    logArea.textContent += e.data + '\n';
+    logArea.scrollTop = logArea.scrollHeight;
+    // if marker indicates process end, refresh status
+    if (e.data.includes('BOT_PROCESS_ENDED') || e.data.includes('Bot stopped')) {
+      updateStatus();
+      loadPurchasesPreview();
+    }
+  };
+  evt.onerror = function(e) {
+    // try reconnecting later
+    console.warn('EventSource error', e);
+    setTimeout(() => { streamLogs(); }, 5000);
+    evt.close();
+  };
+}
+
+async function loadPurchasesPreview() {
+  const res = await fetch('/api/purchases');
+  const j = await res.json();
+  const area = document.getElementById('purchasesArea');
+  if (j.ok) {
+    area.textContent = JSON.stringify(j.data, null, 2);
+  } else {
+    area.textContent = 'No purchases.json found or error: ' + (j.error || 'unknown');
+  }
+}
+
+document.addEventListener('DOMContentLoaded', async () => {
+  await loadEnv();
+  document.getElementById('saveBtn').addEventListener('click', saveEnv);
+  document.getElementById('reloadBtn').addEventListener('click', loadEnv);
+  document.getElementById('resetBtn').addEventListener('click', resetTemplate);
+  document.getElementById('startBtn').addEventListener('click', startBot);
+  document.getElementById('stopBtn').addEventListener('click', stopBot);
+  document.getElementById('downloadPurchasesBtn').addEventListener('click', () => {
+    window.location = '/download-purchases';
+  });
+  await updateStatus();
+  streamLogs();
+  loadPurchasesPreview();
+  // refresh purchases preview periodically
+  setInterval(loadPurchasesPreview, 15_000);
+  setInterval(updateStatus, 5000);
+});
+```

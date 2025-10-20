@@ -1,0 +1,70 @@
+body {
+  font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+  margin: 0;
+  background: #f7f9fb;
+  color: #222;
+}
+.container {
+  max-width: 1100px;
+  margin: 20px auto;
+  padding: 18px;
+}
+h1 { margin: 0 0 10px 0; }
+.panel {
+  background: #fff;
+  border: 1px solid #e1e6ea;
+  padding: 12px;
+  margin-bottom: 12px;
+  border-radius: 6px;
+}
+.grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+.field {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.field label {
+  min-width: 200px;
+  font-weight: 600;
+}
+.field input[type="text"] {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid #d1d7dc;
+  border-radius: 4px;
+}
+.controls {
+  margin-top: 8px;
+}
+.controls button {
+  padding: 8px 12px;
+  margin-right: 8px;
+  border-radius: 4px;
+  border: 1px solid #cbd5db;
+  background: #fff;
+  cursor: pointer;
+}
+.controls button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.log {
+  background: #0b1220;
+  color: #e6eef6;
+  padding: 12px;
+  height: 320px;
+  overflow: auto;
+  border-radius: 6px;
+  font-family: monospace;
+  font-size: 13px;
+}
+.small { height: 220px; }
+.status {
+  margin-left: 12px;
+  font-weight: 600;
+}
+footer { margin-top: 12px; color: #666; }
