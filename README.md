@@ -1,4 +1,3 @@
-markdown
 # PAMT (Python Automated Market Trader)
 
 간단 설명
@@ -27,7 +26,7 @@ markdown
 - 실행 환경
   - 기본적으로 `DRY_RUN=true`로 동작(모의). 실제 주문 전 반드시 충분한 테스트 권장.
 - 운영 도구
-  - CLI 봇 스크립트: `bot_dca_drop_on_drop.py`
+  - 메인 봇 스크립트: `bot_dca_exit.py` (분할매수 + Exit 통합 버전)
   - 로컬 GUI: `gui.py` (tkinter 기반) — .env 편집, 시작/중지, 로그 보기
   - 웹 대시보드: `app.py` (Flask) — .env 편집/저장, 시작/중지, 실시간 로그(SSE), purchases.json 미리보기/다운로드
 
@@ -67,7 +66,7 @@ markdown
 1. `.env` 설정 (`DRY_RUN=true` 권장)
 2. 봇 실행:
    ```
-   python bot_dca_drop_on_drop.py
+   python bot_dca_exit.py
    ```
 3. 로그/진행 상황은 콘솔과 `purchases.json`에서 확인.
 
@@ -76,7 +75,7 @@ GUI (로컬)
    ```
    python gui.py
    ```
-2. 브라우저 없이 데스크탑에서 .env 편집, 봇 시작/중지, 실시간 로그 확인 가능.
+2. 데스크탑 환경에서 .env 편집, 봇 시작/중지, 실시간 로그 확인 가능.
 
 웹 대시보드
 1. `app.py` 실행:
