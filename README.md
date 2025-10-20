@@ -1,4 +1,4 @@
-```markdown
+markdown
 # PAMT (Python Automated Market Trader)
 
 간단 설명
@@ -125,4 +125,3 @@ purchases.json 구조 (요약)
 
 라이선스
 - 학습/예제 목적의 코드입니다. 사용 시 출처 표기권장. 상업적 사용 등은 별도 검토하세요.
-```
