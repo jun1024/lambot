@@ -1,46 +1,128 @@
 ```markdown
-# PAMT — Web Dashboard Extension
+# PAMT (Python Automated Market Trader)
 
-이 프로젝트에 웹 기반 대시보드(Flask)를 추가했습니다. 대시보드는 .env 환경변수 편집, 봇 시작/중지, 실시간 로그 스트리밍(SSE), purchases.json 미리보기/다운로드 기능을 제공합니다.
+간단 설명
+- PAMT는 Upbit(KRW 마켓)를 대상으로 동작하는 학습/예제용 자동매매 도구 모음입니다.
+- 현재 제공되는 주요 전략:
+  1. 분할매수(DCA, Installments) 기반의 "가격 하락 트리거(Drop-Buy)"
+  2. 목표 수익 도달 시 자동 청산(Exit)
+- pyupbit 라이브러리를 사용하여 Upbit Open API와 통신합니다.
+- 예시 대상 코인: KRW-BTC, KRW-ETH, KRW-XRP (코드 상단의 `COINS` 변수로 변경 가능)
 
-빠른 시작
-1. 의존성 설치
+주요 기능 요약
+- 분할매수(DCA)
+  - 코인별 목표 투자금(target_krw)을 설정하고 `INSTALLMENTS` 회수로 나누어 매수합니다.
+  - `INITIAL_BUY` 옵션으로 시작 시 1회분 매수 가능.
+- 가격 하락 트리거 (Drop-Buy)
+  - 마지막 매수가에서 지정한 퍼센트(`DROP_PCT`)만큼 하락하면 다음 분할매수 실행.
+  - 코인별로 개별 트리거 설정 가능: `DROP_PCT_PER_COIN`.
+- 코인별 비중 지정
+  - `ALLOCATIONS` 환경변수로 퍼센트(예: `50,30,20`) 또는 분수(예: `0.5,0.3,0.2`) 형태로 지정.
+  - 일부만 지정하면 나머지 비중을 자동 분배하여 합이 1.0이 되도록 정규화.
+- 목표 수익 청산(Exit)
+  - `TARGET_PROFIT_PCT`(%) 또는 `TARGET_PROFIT_KRW`(절대값)으로 청산 조건 설정.
+  - `SELL_FRACTION`으로 매도 비율(전량/부분)을 지정.
+- 상태/기록
+  - `purchases.json`에 매수/매도 기록, 트리거 가격, 완료/청산 상태를 저장하여 재시작 시 이어서 동작.
+- 실행 환경
+  - 기본적으로 `DRY_RUN=true`로 동작(모의). 실제 주문 전 반드시 충분한 테스트 권장.
+- 운영 도구
+  - CLI 봇 스크립트: `bot_dca_drop_on_drop.py`
+  - 로컬 GUI: `gui.py` (tkinter 기반) — .env 편집, 시작/중지, 로그 보기
+  - 웹 대시보드: `app.py` (Flask) — .env 편집/저장, 시작/중지, 실시간 로그(SSE), purchases.json 미리보기/다운로드
+
+설치 (로컬)
+1. Python 3.8+ 권장
+2. 의존성 설치:
    ```
    pip install -r requirements.txt
    ```
-2. 파일 위치 확인
-   - bot_dca_drop_on_drop.py (또는 사용중인 봇 스크립트)와 app.py, templates/, static/이 동일한 프로젝트 루트에 있어야 합니다.
-3. 실행
+   - GUI만 사용 시 tkinter는 기본 포함되어 있어 별도 설치 불필요.
+   - 웹 대시보드는 Flask와 python-dotenv가 필요합니다 (requirements.txt 포함).
+
+환경 변수 (.env)
+- 프로젝트 루트에 `.env` 파일을 생성하여 설정합니다. 주요 변수 예시:
+  ```
+  UPBIT_ACCESS_KEY=your_access_key_here
+  UPBIT_SECRET_KEY=your_secret_key_here
+  DRY_RUN=true
+  SIM_KRW_BALANCE=100000
+  INSTALLMENTS=5
+  MIN_KRW_ORDER=5000
+  TOTAL_INVEST_FRACTION=0.5
+  # TOTAL_INVEST_KRW=100000
+  ALLOCATIONS=KRW-BTC:50,KRW-ETH:30,KRW-XRP:20
+  DROP_PCT=2.0
+  DROP_PCT_PER_COIN=KRW-BTC:2,KRW-ETH:3,KRW-XRP:5
+  INITIAL_BUY=true
+  MONITOR_INTERVAL_MIN=5
+  TARGET_PROFIT_PCT=10
+  # TARGET_PROFIT_KRW=5000
+  SELL_FRACTION=1.0
+  PURCHASES_FILE=purchases.json
+  ```
+- `.env.example` 또는 GUI/웹 대시보드에서 템플릿을 불러와 편집하세요.
+
+빠른 사용법 (CLI)
+1. `.env` 설정 (`DRY_RUN=true` 권장)
+2. 봇 실행:
+   ```
+   python bot_dca_drop_on_drop.py
+   ```
+3. 로그/진행 상황은 콘솔과 `purchases.json`에서 확인.
+
+GUI (로컬)
+1. `gui.py` 실행:
+   ```
+   python gui.py
+   ```
+2. 브라우저 없이 데스크탑에서 .env 편집, 봇 시작/중지, 실시간 로그 확인 가능.
+
+웹 대시보드
+1. `app.py` 실행:
    ```
    python app.py
    ```
-4. 브라우저에서 열기
-   - http://127.0.0.1:5000
+2. 브라우저에서 `http://127.0.0.1:5000` 접속
+3. .env 편집, Start/Stop, 실시간 로그(SSE), purchases.json 미리보기 및 다운로드 가능
 
-주요 기능
-- 웹에서 .env를 편집하고 저장
-- Start / Stop 버튼으로 봇 실행 제어 (서브프로세스로 실행)
-- 실시간 로그 스트리밍 (SSE) — 로그는 bot stdout/stderr를 캡처하여 표시합니다
-- purchases.json 미리보기 및 다운로드
-- 기본값으로 DRY_RUN=true 권장
+purchases.json 구조 (요약)
+- 각 티커 키 아래 예:
+  ```json
+  "KRW-BTC": {
+    "target_krw": 100000,
+    "installments": 5,
+    "purchased": [
+      {"krw": 20000, "price": 50000000, "amount": 0.0004, "timestamp": "..."},
+      ...
+    ],
+    "sold": [...],
+    "last_buy_price": 48000000,
+    "next_buy_price": 47040000,
+    "completed": false,
+    "exited": false
+  }
+  ```
+- 파일을 직접 편집하지 마세요. 무결성 보장을 위해 프로그램에서 관리됩니다.
 
-보안 & 운영 주의
-- 이 대시보드는 로컬/개인 환경에서의 실험용입니다. 프로덕션으로 배포하려면 인증(로그인), HTTPS, API 키 암호화/비밀관리, CSRF 방지 등 보안 조치가 필요합니다.
-- bot 실행은 로컬 파이썬 프로세스로 수행됩니다. 호스트 시스템의 자원, 프로세스 권한 등에 주의하세요.
-- DRY_RUN=true 상태에서 충분히 테스트한 다음 UPBIT_ACCESS_KEY/UPBIT_SECRET_KEY를 설정해 실거래로 전환하세요.
+안전 및 주의사항 (중요)
+- 이 코드는 예제/학습용입니다. 실제 매매 시 손실 책임은 사용자에게 있습니다.
+- 실거래 전 반드시 `DRY_RUN=true`로 충분히 테스트하세요.
+- 거래소의 최소 주문 단위, 수수료, 슬리피지, API 호출 제한 등을 고려한 추가 예외 처리/재시도 로직을 권장합니다.
+- 웹 대시보드는 기본적으로 인증/암호화 미지원입니다. 로컬에서만 사용하거나 별도 인증/HTTPS 적용 후 공개 배포하세요.
+- `purchases.json` 또는 `.env` 파일에 민감정보(특히 API 키)를 안전하게 관리하세요.
 
-확장 아이디어
-- 웹에서 COINS 리스트 편집 기능 추가
-- 텔레그램/슬랙 알림 설정 UI
-- 백테스팅 결과 표시
-- 사용자 인증 및 원격 배포 (Docker + nginx + gunicorn)
-
-파일 목록 (추가된/중요)
-- app.py — Flask 웹 대시보드 실행기
-- templates/index.html — 대시보드 UI
-- static/style.css — 간단한 스타일
-- requirements.txt — Flask 포함 의존성
+개선 및 확장 아이디어
+- 하락폭에 비례해 매수 금액을 가중 조정하는 스케일-인 로직
+- 코인별 서로 다른 `DROP_PCT`, `TARGET` 설정을 UI에서 직접 편집
+- 텔레그램/슬랙 알림, 이메일 알림 연동
+- 백테스트 기능(과거 데이터 기반 시뮬레이션)
+- 부분매도(목표 도달 시 일부 매도) 및 리밸런싱
 
 참고
-- 기존 README의 내용(전략 설명, 위험 고지 등)은 유지하세요. 이 웹 대시보드는 운영 편의성을 위한 도구이며, 전략/리스크 관리는 코드 레벨에서 신중하게 점검해야 합니다.
+- Upbit Open API 문서: https://docs.upbit.com
+- pyupbit: https://github.com/sharebook-kr/pyupbit
+
+라이선스
+- 학습/예제 목적의 코드입니다. 사용 시 출처 표기권장. 상업적 사용 등은 별도 검토하세요.
 ```
