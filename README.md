@@ -1,3 +1,3 @@
 # lambot
 
-pip install pyupbit pandas
+pip install pyupbit
