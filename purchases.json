@@ -1,0 +1,26 @@
+{
+  "KRW-BTC": {
+    "target_krw": 16666.666666666664,
+    "installments": 5,
+    "purchased": [],
+    "sold": [],
+    "completed": true,
+    "exited": false
+  },
+  "KRW-ETH": {
+    "target_krw": 16666.666666666664,
+    "installments": 5,
+    "purchased": [],
+    "sold": [],
+    "completed": true,
+    "exited": false
+  },
+  "KRW-XRP": {
+    "target_krw": 16666.666666666664,
+    "installments": 5,
+    "purchased": [],
+    "sold": [],
+    "completed": true,
+    "exited": false
+  }
+}
