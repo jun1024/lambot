@@ -17,9 +17,14 @@ import time
 import json
 import logging
 from datetime import datetime
+from pathlib import Path
 from dotenv import load_dotenv
 import pyupbit
 import traceback
+
+
+def _parse_bool(value, default=False):
+    return default if value is None else str(value).lower() in ("1", "true", "yes", "on")
 
 load_dotenv()
 
@@ -37,7 +42,7 @@ DROP_PCT = float(os.getenv("DROP_PCT", "2.0"))               # % 단위: 2.0 -> 
 DROP_PCT_PER_COIN = os.getenv("DROP_PCT_PER_COIN", "").strip()
 
 # 초기 매수 여부: 시작 시 1회분을 바로 매수할지 (True/False)
-INITIAL_BUY = True if os.getenv("INITIAL_BUY", "true").lower() in ("1", "true", "yes") else False
+INITIAL_BUY = _parse_bool(os.getenv("INITIAL_BUY", "true"), default=True)
 
 # 자금 할당: 전체 KRW 잔고의 몇 %를 투입할지 또는 TOTAL_INVEST_KRW 사용
 TOTAL_INVEST_FRACTION = float(os.getenv("TOTAL_INVEST_FRACTION", "0.5"))  # 기본 50% 사용
@@ -52,13 +57,48 @@ TARGET_PROFIT_KRW = os.getenv("TARGET_PROFIT_KRW", "")  # 예: "5000" -> 순이�
 SELL_FRACTION = float(os.getenv("SELL_FRACTION", "1.0"))  # 매도 시 전량:1.0, 일부:0.5 등
 
 # purchases 기록 파일
-PURCHASES_FILE = os.getenv("PURCHASES_FILE", "purchases.json")
+PURCHASES_DEFAULT = "purchases.json"
+PURCHASES_ALLOWED_SUFFIXES = {".json"}
+BASE_DIR = Path(__file__).resolve().parent
+DEFAULT_PURCHASES_PATH = (BASE_DIR / PURCHASES_DEFAULT).resolve()
+PURCHASES_FILE_ENV = os.getenv("PURCHASES_FILE", PURCHASES_DEFAULT)
+
+
+def _resolve_purchases_path(env_value):
+    candidate_value = (env_value or PURCHASES_DEFAULT).strip()
+    if not candidate_value:
+        candidate_value = PURCHASES_DEFAULT
+    candidate = Path(candidate_value)
+    if not candidate.is_absolute():
+        candidate = (BASE_DIR / candidate).resolve()
+    else:
+        candidate = candidate.resolve()
+
+    log = logging.getLogger("upbit-dca-drop-bot")
+    try:
+        candidate.relative_to(BASE_DIR)
+    except ValueError:
+        log.warning("Rejected PURCHASES_FILE outside project dir: %s", env_value)
+        return DEFAULT_PURCHASES_PATH
+
+    if candidate.suffix.lower() not in PURCHASES_ALLOWED_SUFFIXES:
+        log.warning("Rejected PURCHASES_FILE with disallowed suffix: %s", candidate)
+        return DEFAULT_PURCHASES_PATH
+
+    if candidate.is_dir():
+        log.warning("Rejected PURCHASES_FILE pointing to directory: %s", candidate)
+        return DEFAULT_PURCHASES_PATH
+
+    return candidate
+
+
+PURCHASES_FILE = _resolve_purchases_path(PURCHASES_FILE_ENV)
 
 # 모니터링 주기 (초)
 MONITOR_INTERVAL_SEC = int(os.getenv("MONITOR_INTERVAL_SEC", str(60 * int(os.getenv("MONITOR_INTERVAL_MIN", "5")))))  # 기본 5분
 
 # 실행 모드
-DRY_RUN = True if os.getenv("DRY_RUN", "true").lower() in ("1", "true", "yes") else False
+DRY_RUN = _parse_bool(os.getenv("DRY_RUN", "true"), default=True)
 
 # 업비트 API 키 (실거래 시 필요)
 ACCESS = os.getenv("UPBIT_ACCESS_KEY", "")
@@ -71,6 +111,24 @@ if ACCESS and SECRET and not DRY_RUN:
 else:
     upbit = None
     client_mode = "DRY_RUN"
+
+SIM_STATE = None
+if DRY_RUN or upbit is None:
+    try:
+        sim_krw = float(os.getenv("SIM_KRW_BALANCE", "100000"))
+    except ValueError:
+        sim_krw = 100000.0
+    SIM_STATE = {
+        "krw": max(0.0, sim_krw),
+        "coins": {}
+    }
+    for ticker in COINS:
+        currency = ticker.split("-")[1]
+        try:
+            initial_coin = float(os.getenv(f"SIM_BAL_{currency}", "0"))
+        except ValueError:
+            initial_coin = 0.0
+        SIM_STATE["coins"][ticker] = max(0.0, initial_coin)
 
 # 로깅
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -197,26 +255,30 @@ def parse_drop_pcts(env_str):
 ALLOCATIONS = parse_allocations(ALLOCATIONS_ENV)
 DROP_PCTS = parse_drop_pcts(DROP_PCT_PER_COIN)
 
+
 def load_purchases():
-    if os.path.exists(PURCHASES_FILE):
+    if PURCHASES_FILE.exists():
         try:
-            with open(PURCHASES_FILE, "r", encoding="utf-8") as f:
+            with PURCHASES_FILE.open("r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception:
             logger.warning("purchases.json 읽기 실패, 새로 생성합니다.")
     return {}
 
+
 def save_purchases(data):
     try:
-        with open(PURCHASES_FILE, "w", encoding="utf-8") as f:
+        PURCHASES_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with PURCHASES_FILE.open("w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
     except Exception as e:
         logger.error(f"purchases.json 저장 실패: {e}")
 
 def get_krw_balance():
     if DRY_RUN or upbit is None:
-        sim = float(os.getenv("SIM_KRW_BALANCE", "100000"))
-        return sim
+        if SIM_STATE is None:
+            return 0.0
+        return SIM_STATE.get("krw", 0.0)
     try:
         balances = upbit.get_balances()
         for b in balances:
@@ -248,6 +310,9 @@ def place_market_buy(ticker, krw_amount):
         return None
     if DRY_RUN or upbit is None:
         price = ticker_price(ticker) or 0
+        if price <= 0:
+            logger.warning(f"[{ticker}] 시뮬레이션 매수 가격 조회 실패, 주문 스킵")
+            return None
         qty = krw_amount / price if price and price > 0 else 0
         resp = {
             "result": "dry_run_buy",
@@ -258,6 +323,9 @@ def place_market_buy(ticker, krw_amount):
             "timestamp": datetime.utcnow().isoformat() + "Z"
         }
         logger.info(f"[DRY_RUN] BUY {ticker} KRW {krw_amount:.0f} -> qty {qty:.8f} @ price {price}")
+        if SIM_STATE is not None:
+            SIM_STATE["krw"] = max(0.0, SIM_STATE.get("krw", 0.0) - krw_amount)
+            SIM_STATE["coins"][ticker] = SIM_STATE["coins"].get(ticker, 0.0) + qty
         return resp
     try:
         resp = upbit.buy_market_order(ticker, krw_amount)
@@ -270,21 +338,36 @@ def place_market_buy(ticker, krw_amount):
 
 def place_market_sell(ticker, amount):
     amount = float(amount)
-    price = ticker_price(ticker) or 0
-    value_krw = amount * price
+    market_price = ticker_price(ticker) or 0
+    value_krw = amount * market_price
     if value_krw < MIN_KRW_ORDER:
         logger.info(f"[{ticker}] 매도 가치 {value_krw:.0f}원 < 최소 {MIN_KRW_ORDER}원, 매도 생략")
         return None
     if DRY_RUN or upbit is None:
+        if market_price <= 0:
+            logger.warning(f"[{ticker}] 시뮬레이션 매도 가격 조회 실패, 주문 스킵")
+            return None
+        actual_amount = amount
+        if SIM_STATE is not None:
+            held = SIM_STATE["coins"].get(ticker, 0.0)
+            if held <= 0:
+                logger.info(f"[{ticker}] 시뮬레이션 보유량이 없어 매도 생략")
+                return None
+            if held < amount:
+                logger.warning(f"[{ticker}] 요청한 매도 수량 {amount:.8f} > 보유 {held:.8f}, 보유분만 매도")
+                actual_amount = held
+            SIM_STATE["coins"][ticker] = max(0.0, held - actual_amount)
+            SIM_STATE["krw"] = SIM_STATE.get("krw", 0.0) + actual_amount * market_price
+        value_krw = actual_amount * market_price
         resp = {
             "result": "dry_run_sell",
             "ticker": ticker,
-            "amount": amount,
-            "price": price,
+            "amount": actual_amount,
+            "price": market_price,
             "krw": value_krw,
             "timestamp": datetime.utcnow().isoformat() + "Z"
         }
-        logger.info(f"[DRY_RUN] SELL {ticker} amt {amount:.8f} @ price {price} -> KRW {value_krw:.0f}")
+        logger.info(f"[DRY_RUN] SELL {ticker} amt {actual_amount:.8f} @ price {market_price} -> KRW {value_krw:.0f}")
         return resp
     try:
         resp = upbit.sell_market_order(ticker, amount)
@@ -421,6 +504,7 @@ def prepare_targets(total_krw):
 def main():
     global total_invest
     logger.info(f"Starting DCA Drop-Buy bot ({client_mode}). Coins: {COINS}")
+    logger.info(f"Using purchases file: {PURCHASES_FILE}")
     if ALLOCATIONS:
         logger.info(f"사용자 지정 ALLOCATIONS (fractions): {ALLOCATIONS}")
     if DROP_PCTS:
@@ -500,7 +584,8 @@ def main():
                 purchases = load_purchases()
                 all_done = all((purchases.get(t, {}).get("completed", False) or purchases.get(t, {}).get("exited", False)) for t in COINS)
                 if all_done:
-                    logger.info("모든 코인의 분할매수가 완료되었거나 청산됨. 추가 매수는 없습니다.")
+                    logger.info("모든 코인의 분할매수가 완료되었거나 청산됨. 루프를 종료합니다.")
+                    break
                 krw_balance = get_krw_balance()
                 for t in COINS:
                     try:

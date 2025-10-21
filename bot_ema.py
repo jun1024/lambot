@@ -17,6 +17,10 @@ import pandas as pd
 from datetime import datetime
 import traceback
 
+
+def _parse_bool(value, default=False):
+    return default if value is None else str(value).lower() in ("1", "true", "yes", "on")
+
 # Load environment variables from .env (if exists)
 load_dotenv()
 
@@ -28,7 +32,7 @@ EMA_LONG = 25
 SLEEP_SECONDS = 30  # 루프 대기 (초)
 ALLOCATION_PER_TRADE = 0.1  # 매수 시 KRW 잔고의 몇 퍼센트로 매수할지 (예: 0.1 = 10%)
 MIN_KRW_ORDER = 5000  # 업비트 최소원금 (KRW)
-DRY_RUN = True if os.getenv("DRY_RUN", "true").lower() in ("1", "true", "yes") else False
+DRY_RUN = _parse_bool(os.getenv("DRY_RUN", "true"), default=True)
 
 # Load API keys (optional, 필요 시 .env에 설정)
 ACCESS = os.getenv("UPBIT_ACCESS_KEY", "")
@@ -54,6 +58,24 @@ else:
     else:
         logger.warning("API 키 없음 또는 DRY_RUN 모드가 켜져 있습니다. 시뮬레이션으로 동작합니다.")
 
+SIM_STATE = None
+if DRY_RUN or upbit is None:
+    try:
+        sim_krw = float(os.getenv("SIM_KRW_BALANCE", "100000"))
+    except ValueError:
+        sim_krw = 100000.0
+    SIM_STATE = {
+        "krw": max(0.0, sim_krw),
+        "coins": {}
+    }
+    for ticker in COINS:
+        currency = ticker.split("-")[1]
+        try:
+            initial_coin = float(os.getenv(f"SIM_BAL_{currency}", "0"))
+        except ValueError:
+            initial_coin = 0.0
+        SIM_STATE["coins"][ticker] = max(0.0, initial_coin)
+
 
 def safe_get_ohlcv(ticker, interval=INTERVAL, count=100):
     """pyupbit.get_ohlcv 래퍼: 실패 시 재시도"""
@@ -78,9 +100,9 @@ def calculate_emas(df, short=EMA_SHORT, long=EMA_LONG):
 def get_krw_balance():
     """KRW 잔고 조회"""
     if DRY_RUN or upbit is None:
-        # 시뮬레이션: 환경변수 또는 100,000원으로 가정
-        krw_sim = float(os.getenv("SIM_KRW_BALANCE", "100000"))
-        return krw_sim
+        if SIM_STATE is None:
+            return 0.0
+        return SIM_STATE.get("krw", 0.0)
     try:
         balances = upbit.get_balances()
         for b in balances:
@@ -95,8 +117,9 @@ def get_coin_balance(ticker):
     """코인(종목) 잔고 조회. ticker 예: 'KRW-BTC' -> currency 'BTC'"""
     currency = ticker.split("-")[1]
     if DRY_RUN or upbit is None:
-        # 시뮬레이션: 0으로 시작
-        return float(os.getenv(f"SIM_BAL_{currency}", "0"))
+        if SIM_STATE is None:
+            return 0.0
+        return SIM_STATE["coins"].get(ticker, 0.0)
     try:
         balances = upbit.get_balances()
         for b in balances:
@@ -114,8 +137,23 @@ def place_market_buy(ticker, krw_amount):
         logger.info(f"매수 금액 {krw_amount} KRW < 최소 {MIN_KRW_ORDER}원, 주문 취소")
         return None
     if DRY_RUN or upbit is None:
-        logger.info(f"[DRY_RUN] BUY {ticker} KRW {krw_amount:.0f}")
-        return {"result": "dry_run", "ticker": ticker, "krw": krw_amount}
+        price = ticker_price(ticker)
+        if not price or price <= 0:
+            logger.warning(f"{ticker} 시뮬레이션 매수 가격 조회 실패, 주문 스킵")
+            return None
+        qty = krw_amount / price
+        logger.info(f"[DRY_RUN] BUY {ticker} KRW {krw_amount:.0f} -> qty {qty:.8f} @ price {price}")
+        if SIM_STATE is not None:
+            SIM_STATE["krw"] = max(0.0, SIM_STATE.get("krw", 0.0) - krw_amount)
+            SIM_STATE["coins"][ticker] = SIM_STATE["coins"].get(ticker, 0.0) + qty
+        return {
+            "result": "dry_run_buy",
+            "ticker": ticker,
+            "krw": krw_amount,
+            "price": price,
+            "amount": qty,
+            "timestamp": datetime.utcnow().isoformat() + "Z"
+        }
     try:
         resp = upbit.buy_market_order(ticker, krw_amount)
         logger.info(f"BUY order placed: {resp}")
@@ -130,8 +168,30 @@ def place_market_sell(ticker, volume):
     """시장가 매도"""
     volume = float(volume)
     if DRY_RUN or upbit is None:
-        logger.info(f"[DRY_RUN] SELL {ticker} Volume {volume}")
-        return {"result": "dry_run", "ticker": ticker, "vol": volume}
+        price = ticker_price(ticker)
+        if not price or price <= 0:
+            logger.warning(f"{ticker} 시뮬레이션 매도 가격 조회 실패, 주문 스킵")
+            return None
+        actual_volume = volume
+        if SIM_STATE is not None:
+            held = SIM_STATE["coins"].get(ticker, 0.0)
+            if held <= 0:
+                logger.info(f"{ticker} 시뮬레이션 보유량이 없어 매도하지 않음")
+                return None
+            if held < volume:
+                logger.warning(f"{ticker} 매도 요청 수량 {volume:.8f} > 보유 {held:.8f}, 보유분만 매도")
+                actual_volume = held
+            SIM_STATE["coins"][ticker] = max(0.0, held - actual_volume)
+            SIM_STATE["krw"] = SIM_STATE.get("krw", 0.0) + actual_volume * price
+        logger.info(f"[DRY_RUN] SELL {ticker} Volume {actual_volume:.8f} @ price {price}")
+        return {
+            "result": "dry_run_sell",
+            "ticker": ticker,
+            "vol": actual_volume,
+            "price": price,
+            "krw": actual_volume * price,
+            "timestamp": datetime.utcnow().isoformat() + "Z"
+        }
     try:
         resp = upbit.sell_market_order(ticker, volume)
         logger.info(f"SELL order placed: {resp}")
