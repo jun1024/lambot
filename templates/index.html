@@ -58,10 +58,17 @@ async function loadEnv() {
   const grid = document.querySelector('.grid');
   grid.innerHTML = '';
   for (const k of ENV_KEYS) {
-    const val = data[k] || '';
+    const val = data[k] != null ? String(data[k]) : '';
     const div = document.createElement('div');
     div.className = 'field';
-    div.innerHTML = `<label>${k}</label><input type="text" name="${k}" value="${val}" />`;
+    const label = document.createElement('label');
+    label.textContent = k;
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.name = k;
+    input.value = val;
+    div.appendChild(label);
+    div.appendChild(input);
     grid.appendChild(div);
   }
 }

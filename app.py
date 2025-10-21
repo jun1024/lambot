@@ -20,8 +20,9 @@ import json
 import queue
 import subprocess
 import threading
+from pathlib import Path
 from flask import (
-    Flask, render_template, request, redirect, url_for,
+    Flask, render_template, request,
     jsonify, Response, send_file, abort
 )
 
@@ -29,6 +30,9 @@ from flask import (
 ENV_FILE = ".env"
 BOT_SCRIPT = "bot_dca_exit.py"  # adjust if your bot filename differs
 PURCHASES_DEFAULT = "purchases.json"
+BASE_DIR = Path(__file__).resolve().parent
+DEFAULT_PURCHASES_PATH = (BASE_DIR / PURCHASES_DEFAULT).resolve()
+PURCHASES_ALLOWED_SUFFIXES = {".json"}
 
 # Keys exposed in web form (order matters for display)
 ENV_KEYS = [
@@ -61,6 +65,15 @@ stdout_reader_thread = None
 stop_reader_event = threading.Event()
 
 
+@app.after_request
+def add_security_headers(response):
+    """Attach basic security headers for dashboard responses."""
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Cache-Control", "no-store")
+    return response
+
+
 # --- env helpers ---
 def load_env_file(path=ENV_FILE):
     env = {}
@@ -76,7 +89,7 @@ def load_env_file(path=ENV_FILE):
                     k, v = line.split("=", 1)
                     env[k.strip()] = v.strip()
     except Exception:
-        pass
+        app.logger.exception("Failed to load .env file %s", path)
     return env
 
 
@@ -121,6 +134,34 @@ def _reader_thread(proc, stop_event):
         log_queue.put("[system] BOT_PROCESS_ENDED")
 
 
+def _resolve_purchases_path(env_value):
+    """Restrict PURCHASES_FILE to a .json within BASE_DIR."""
+    candidate_value = (env_value or PURCHASES_DEFAULT).strip()
+    if not candidate_value:
+        candidate_value = PURCHASES_DEFAULT
+    candidate = Path(candidate_value)
+    if not candidate.is_absolute():
+        candidate = (BASE_DIR / candidate).resolve()
+    else:
+        candidate = candidate.resolve()
+
+    try:
+        candidate.relative_to(BASE_DIR)
+    except ValueError:
+        app.logger.warning("Rejected PURCHASES_FILE outside project dir: %s", env_value)
+        return DEFAULT_PURCHASES_PATH
+
+    if candidate.suffix.lower() not in PURCHASES_ALLOWED_SUFFIXES:
+        app.logger.warning("Rejected PURCHASES_FILE with disallowed suffix: %s", candidate)
+        return DEFAULT_PURCHASES_PATH
+
+    if candidate.is_dir():
+        app.logger.warning("Rejected PURCHASES_FILE pointing to directory: %s", candidate)
+        return DEFAULT_PURCHASES_PATH
+
+    return candidate
+
+
 def start_bot_subprocess():
     global bot_proc, stdout_reader_thread, stop_reader_event
     with bot_lock:
@@ -132,8 +173,9 @@ def start_bot_subprocess():
         file_env = load_env_file()
         for k, v in file_env.items():
             env[k] = v
-        # Ensure purchases file env exists
-        env.setdefault("PURCHASES_FILE", file_env.get("PURCHASES_FILE", PURCHASES_DEFAULT))
+        # Ensure purchases file env exists and is safe
+        resolved_purchases = _resolve_purchases_path(file_env.get("PURCHASES_FILE", PURCHASES_DEFAULT))
+        env["PURCHASES_FILE"] = str(resolved_purchases)
         try:
             bot_proc = subprocess.Popen(
                 [sys.executable, BOT_SCRIPT],
@@ -251,11 +293,12 @@ def stream_logs():
 @app.route("/api/purchases", methods=["GET"])
 def api_purchases():
     env = load_env_file()
-    purchases_file = env.get("PURCHASES_FILE", PURCHASES_DEFAULT)
-    if not os.path.exists(purchases_file):
-        return jsonify({"ok": False, "error": "file_not_found", "path": purchases_file}), 404
+    purchases_file = _resolve_purchases_path(env.get("PURCHASES_FILE", PURCHASES_DEFAULT))
+    if not purchases_file.exists():
+        rel = os.path.relpath(str(purchases_file), str(BASE_DIR))
+        return jsonify({"ok": False, "error": "file_not_found", "path": rel}), 404
     try:
-        with open(purchases_file, "r", encoding="utf-8") as f:
+        with purchases_file.open("r", encoding="utf-8") as f:
             data = json.load(f)
         return jsonify({"ok": True, "data": data})
     except Exception as e:
@@ -265,10 +308,10 @@ def api_purchases():
 @app.route("/download-purchases", methods=["GET"])
 def download_purchases():
     env = load_env_file()
-    purchases_file = env.get("PURCHASES_FILE", PURCHASES_DEFAULT)
-    if not os.path.exists(purchases_file):
+    purchases_file = _resolve_purchases_path(env.get("PURCHASES_FILE", PURCHASES_DEFAULT))
+    if not purchases_file.exists():
         return abort(404)
-    return send_file(purchases_file, as_attachment=True)
+    return send_file(str(purchases_file), as_attachment=True)
 
 
 # Static helper to load default template if .env missing
@@ -304,4 +347,4 @@ PURCHASES_FILE=purchases.json
 # --- main ---
 if __name__ == "__main__":
     # Ensure templates/static exist check isn't needed here - assume project structure
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host="127.0.0.1", port=5000, debug=False)
