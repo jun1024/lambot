@@ -10,14 +10,13 @@
 
 주요 기능 요약
 - 분할매수(DCA)
-  - 코인별 목표 투자금(target_krw)을 설정하고 `INSTALLMENTS` 회수로 나누어 매수합니다.
+  - 총투자금(total_invest)을 남은 분할 회차 수로 나누어 동적으로 매수 금액을 계산합니다.
   - `INITIAL_BUY` 옵션으로 시작 시 1회분 매수 가능.
 - 가격 하락 트리거 (Drop-Buy)
   - 마지막 매수가에서 지정한 퍼센트(`DROP_PCT`)만큼 하락하면 다음 분할매수 실행.
   - 코인별로 개별 트리거 설정 가능: `DROP_PCT_PER_COIN`.
-- 코인별 비중 지정
-  - `ALLOCATIONS` 환경변수로 퍼센트(예: `50,30,20`) 또는 분수(예: `0.5,0.3,0.2`) 형태로 지정.
-  - 일부만 지정하면 나머지 비중을 자동 분배하여 합이 1.0이 되도록 정규화.
+- 자동 매수 우선순위
+  - 가격 하락 트리거가 충족되는 코인부터 순차적으로 매수하여, 별도 비중 설정 없이 예산을 활용합니다.
 - 목표 수익 청산(Exit)
   - `TARGET_PROFIT_PCT`(%) 또는 `TARGET_PROFIT_KRW`(절대값)으로 청산 조건 설정.
   - `SELL_FRACTION`으로 매도 비율(전량/부분)을 지정.
@@ -50,7 +49,6 @@
   MIN_KRW_ORDER=5000
   TOTAL_INVEST_FRACTION=0.5
   # TOTAL_INVEST_KRW=100000
-  ALLOCATIONS=KRW-BTC:50,KRW-ETH:30,KRW-XRP:20
   DROP_PCT=2.0
   DROP_PCT_PER_COIN=KRW-BTC:2,KRW-ETH:3,KRW-XRP:5
   INITIAL_BUY=true
@@ -89,7 +87,6 @@ purchases.json 구조 (요약)
 - 각 티커 키 아래 예:
   ```json
   "KRW-BTC": {
-    "target_krw": 100000,
     "installments": 5,
     "purchased": [
       {"krw": 20000, "price": 50000000, "amount": 0.0004, "timestamp": "..."},
@@ -102,6 +99,7 @@ purchases.json 구조 (요약)
     "exited": false
   }
   ```
+- 전체 예산과 잔여 회차는 저장된 매수 기록을 기반으로 동적으로 계산되며, `target_krw` 필드를 사용하지 않습니다.
 - 파일을 직접 편집하지 마세요. 무결성 보장을 위해 프로그램에서 관리됩니다.
 
 안전 및 주의사항 (중요)
