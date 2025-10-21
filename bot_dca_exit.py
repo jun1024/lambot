@@ -93,7 +93,23 @@ def _resolve_purchases_path(env_value):
 PURCHASES_FILE = _resolve_purchases_path(PURCHASES_FILE_ENV)
 
 # 모니터링 주기 (초)
-MONITOR_INTERVAL_SEC = int(os.getenv("MONITOR_INTERVAL_SEC", str(60 * int(os.getenv("MONITOR_INTERVAL_MIN", "5")))))  # 기본 5분
+def _parse_positive_int(value, default):
+    try:
+        parsed = int(str(value).strip())
+        if parsed > 0:
+            return parsed
+    except (TypeError, ValueError):
+        pass
+    return default
+
+
+_monitor_interval_sec_env = os.getenv("MONITOR_INTERVAL_SEC", "").strip()
+MONITOR_INTERVAL_SEC = _parse_positive_int(_monitor_interval_sec_env, None) if _monitor_interval_sec_env else None
+if MONITOR_INTERVAL_SEC is None:
+    default_minutes = 5
+    monitor_interval_min_env = os.getenv("MONITOR_INTERVAL_MIN", "").strip()
+    minutes = _parse_positive_int(monitor_interval_min_env, default_minutes)
+    MONITOR_INTERVAL_SEC = max(1, minutes) * 60
 
 # 실행 모드
 DRY_RUN = _parse_bool(os.getenv("DRY_RUN", "true"), default=True)
