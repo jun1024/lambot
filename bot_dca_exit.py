@@ -8,7 +8,8 @@ Upbit DCA Bot — Buy-on-Price-Drop Strategy (BTC/ETH/XRP)
   * INITIAL_BUY: 시작 시 기본 1회분 매수 여부 (True/False)
   * After each buy, next_buy_price = last_buy_price * (1 - DROP_PCT/100)
   * Do this until INSTALLMENTS reached.
-- ALLOCATIONS (percent or fractions), TARGET exit (percent/KRW), SELL_FRACTION, DRY_RUN supported.
+- 전체 예산은 코인별 비중 지정 없이 공유되며, 하락 트리거를 먼저 충족한 코인부터 순차적으로 매수합니다.
+- TARGET exit (percent/KRW), SELL_FRACTION, DRY_RUN supported.
 - purchases.json stores progress and trigger prices so restarts continue correctly.
 """
 
@@ -47,9 +48,6 @@ INITIAL_BUY = _parse_bool(os.getenv("INITIAL_BUY", "true"), default=True)
 # 자금 할당: 전체 KRW 잔고의 몇 %를 투입할지 또는 TOTAL_INVEST_KRW 사용
 TOTAL_INVEST_FRACTION = float(os.getenv("TOTAL_INVEST_FRACTION", "0.5"))  # 기본 50% 사용
 TOTAL_INVEST_KRW = os.getenv("TOTAL_INVEST_KRW", "")  # 절대 금액 지정 시 사용
-
-# 코인별 비중(옵션). 예: "KRW-BTC:50,KRW-ETH:30,KRW-XRP:20" 또는 "BTC:0.5,ETH:0.3,XRP:0.2"
-ALLOCATIONS_ENV = os.getenv("ALLOCATIONS", "")  # 빈 문자열이면 균등 분배
 
 # Exit(청산) 관련 설정
 TARGET_PROFIT_PCT = os.getenv("TARGET_PROFIT_PCT", "")  # 예: "10" -> 10% 이익 시 매도
@@ -95,7 +93,23 @@ def _resolve_purchases_path(env_value):
 PURCHASES_FILE = _resolve_purchases_path(PURCHASES_FILE_ENV)
 
 # 모니터링 주기 (초)
-MONITOR_INTERVAL_SEC = int(os.getenv("MONITOR_INTERVAL_SEC", str(60 * int(os.getenv("MONITOR_INTERVAL_MIN", "5")))))  # 기본 5분
+def _parse_positive_int(value, default):
+    try:
+        parsed = int(str(value).strip())
+        if parsed > 0:
+            return parsed
+    except (TypeError, ValueError):
+        pass
+    return default
+
+
+_monitor_interval_sec_env = os.getenv("MONITOR_INTERVAL_SEC", "").strip()
+MONITOR_INTERVAL_SEC = _parse_positive_int(_monitor_interval_sec_env, None) if _monitor_interval_sec_env else None
+if MONITOR_INTERVAL_SEC is None:
+    default_minutes = 5
+    monitor_interval_min_env = os.getenv("MONITOR_INTERVAL_MIN", "").strip()
+    minutes = _parse_positive_int(monitor_interval_min_env, default_minutes)
+    MONITOR_INTERVAL_SEC = max(1, minutes) * 60
 
 # 실행 모드
 DRY_RUN = _parse_bool(os.getenv("DRY_RUN", "true"), default=True)
@@ -135,83 +149,6 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("upbit-dca-drop-bot")
 
 # --- 헬퍼 함수들 ---
-def parse_allocations(env_str):
-    if not env_str:
-        return None
-    try:
-        parts = [p.strip() for p in env_str.split(",") if p.strip()]
-        raw = {}
-        for p in parts:
-            if ":" not in p:
-                continue
-            k, v = p.split(":", 1)
-            key = k.strip().upper()
-            val = float(v.strip())
-            matched = None
-            for t in COINS:
-                if key == t.upper() or key == t.split("-")[1].upper():
-                    matched = t
-                    break
-            if matched:
-                raw[matched] = val
-            else:
-                if key.startswith("KRW-"):
-                    raw[key] = val
-                else:
-                    raw["KRW-" + key] = val
-        if not raw:
-            return None
-
-        sum_vals = sum(raw.values())
-        normalized = {}
-        if sum_vals > 1.01:
-            if sum_vals <= 100.0:
-                for k, v in raw.items():
-                    normalized[k] = v / 100.0
-            else:
-                for k, v in raw.items():
-                    normalized[k] = v / sum_vals
-        else:
-            for k, v in raw.items():
-                normalized[k] = v
-            s = sum(normalized.values())
-            if s > 0:
-                for k in list(normalized.keys()):
-                    normalized[k] = normalized[k] / s
-
-        specified_sum = sum(normalized.get(t, 0.0) for t in COINS if t in normalized)
-        unspecified = [t for t in COINS if t not in normalized]
-        result = {}
-        if unspecified:
-            remaining = max(0.0, 1.0 - specified_sum)
-            per_unspecified = remaining / len(unspecified) if len(unspecified) > 0 else 0.0
-            for t in COINS:
-                if t in normalized:
-                    result[t] = normalized[t]
-                else:
-                    result[t] = per_unspecified
-        else:
-            total = sum(normalized.values())
-            if total > 0:
-                for t in COINS:
-                    result[t] = normalized.get(t, 0.0) / total
-            else:
-                per = 1.0 / len(COINS) if COINS else 0.0
-                for t in COINS:
-                    result[t] = per
-        s_final = sum(result.values())
-        if s_final <= 0:
-            per = 1.0 / len(COINS) if COINS else 0.0
-            for t in COINS:
-                result[t] = per
-        else:
-            for t in result:
-                result[t] = result[t] / s_final
-        return result
-    except Exception:
-        logger.exception("ALLOCATIONS 파싱 중 오류 발생")
-        return None
-
 def parse_drop_pcts(env_str):
     """
     Parse DROP_PCT_PER_COIN env var like "KRW-BTC:2,ETH:3,XRP:5" or "BTC:2,ETH:3".
@@ -252,7 +189,6 @@ def parse_drop_pcts(env_str):
         logger.exception("DROP_PCT_PER_COIN 파싱 중 오류 발생")
         return {}
 
-ALLOCATIONS = parse_allocations(ALLOCATIONS_ENV)
 DROP_PCTS = parse_drop_pcts(DROP_PCT_PER_COIN)
 
 
@@ -382,7 +318,6 @@ def record_purchase_entry(ticker, entry):
     purchases = load_purchases()
     if ticker not in purchases:
         purchases[ticker] = {
-            "target_krw": 0.0,
             "installments": INSTALLMENTS,
             "purchased": [],
             "sold": [],
@@ -406,7 +341,6 @@ def record_sale_entry(ticker, entry):
     purchases = load_purchases()
     if ticker not in purchases:
         purchases[ticker] = {
-            "target_krw": 0.0,
             "installments": INSTALLMENTS,
             "purchased": [],
             "sold": [],
@@ -418,16 +352,6 @@ def record_sale_entry(ticker, entry):
     purchases[ticker].setdefault("sold", []).append(entry)
     purchases[ticker]["exited"] = True
     save_purchases(purchases)
-
-def compute_allocations(total_krw):
-    if ALLOCATIONS:
-        allocs = {}
-        for t in COINS:
-            frac = ALLOCATIONS.get(t, 0.0)
-            allocs[t] = total_krw * frac
-        return allocs
-    per = total_invest / len(COINS) if len(COINS) > 0 else 0
-    return {t: per for t in COINS}
 
 def analyze_unrealized(ticker):
     purchases = load_purchases().get(ticker, {})
@@ -477,14 +401,11 @@ def should_exit(ticker):
         return True, stats
     return False, stats
 
-def prepare_targets(total_krw):
+def prepare_targets():
     purchases = load_purchases()
     for t in COINS:
-        frac = ALLOCATIONS.get(t, 0.0) if ALLOCATIONS else (1.0 / len(COINS))
-        target = total_krw * frac
         if t not in purchases:
             purchases[t] = {
-                "target_krw": float(target),
                 "installments": INSTALLMENTS,
                 "purchased": [],
                 "sold": [],
@@ -495,20 +416,59 @@ def prepare_targets(total_krw):
             }
         else:
             if not purchases[t].get("completed", False) and not purchases[t].get("exited", False):
-                purchases[t]["target_krw"] = float(target)
                 purchases[t]["installments"] = INSTALLMENTS
     save_purchases(purchases)
     return purchases
+
+
+def _total_spent_krw(purchases):
+    total = 0.0
+    for entry in purchases.values():
+        total += sum(item.get("krw", 0.0) for item in entry.get("purchased", []))
+    return total
+
+
+def _total_orders_done(purchases):
+    total = 0
+    for entry in purchases.values():
+        total += len(entry.get("purchased", []))
+    return total
+
+
+def _total_orders_planned(purchases):
+    total = 0
+    if not COINS:
+        return total
+    for t in COINS:
+        entry = purchases.get(t, {})
+        installments = int(entry.get("installments", INSTALLMENTS))
+        done = len(entry.get("purchased", []))
+        if entry.get("completed", False):
+            total += min(done, max(installments, 0))
+        else:
+            total += max(installments, 0)
+    return max(total, 0)
+
+
+def calculate_next_order_amount(total_invest, purchases):
+    """Return (amount, remaining_budget, remaining_orders)."""
+    max_orders = _total_orders_planned(purchases)
+    if max_orders <= 0:
+        return 0.0, 0.0, 0
+    spent = _total_spent_krw(purchases)
+    remaining_budget = max(0.0, total_invest - spent)
+    orders_done = _total_orders_done(purchases)
+    remaining_orders = max(0, max_orders - orders_done)
+    if remaining_budget <= 0 or remaining_orders <= 0:
+        return 0.0, remaining_budget, remaining_orders
+    amount = remaining_budget / remaining_orders
+    return amount, remaining_budget, remaining_orders
 
 # --- 메인 루프 ---
 def main():
     global total_invest
     logger.info(f"Starting DCA Drop-Buy bot ({client_mode}). Coins: {COINS}")
     logger.info(f"Using purchases file: {PURCHASES_FILE}")
-    if ALLOCATIONS:
-        logger.info(f"사용자 지정 ALLOCATIONS (fractions): {ALLOCATIONS}")
-    if DROP_PCTS:
-        logger.info(f"사용자 지정 DROP_PCT_PER_COIN: {DROP_PCTS}")
     logger.info(f"GLOBAL DROP_PCT={DROP_PCT}% INITIAL_BUY={INITIAL_BUY} INSTALLMENTS={INSTALLMENTS}")
     try:
         krw_balance = get_krw_balance()
@@ -532,13 +492,15 @@ def main():
         if TARGET_PROFIT_KRW:
             logger.info(f"목표 이익(절대): {TARGET_PROFIT_KRW}원 이상이면 청산")
 
-        purchases = prepare_targets(total_invest)
-        allocs = {t: purchases[t]['target_krw'] for t in COINS}
-        logger.info("각 코인별 목표(원) 및 1회분 금액:")
-        for t in COINS:
-            one_amount = purchases[t]['target_krw'] / purchases[t]['installments'] if purchases[t]['installments'] > 0 else 0
-            use_drop = DROP_PCTS.get(t, DROP_PCT)
-            logger.info(f" - {t}: target {purchases[t]['target_krw']:.0f} KRW, one_amount {one_amount:.0f} KRW, DROP_PCT {use_drop}%")
+        purchases = prepare_targets()
+        if DROP_PCTS:
+            logger.info(f"사용자 지정 DROP_PCT_PER_COIN: {DROP_PCTS}")
+        order_amount, remaining_budget, remaining_orders = calculate_next_order_amount(total_invest, purchases)
+        logger.info(
+            "총투자금 기준 동적 1회 매수 금액 계산: %.0f KRW (잔여 예산 %.0f KRW, 잔여 회차 %d)"
+            % (order_amount, remaining_budget, remaining_orders)
+        )
+        logger.info("가격 하락 트리거가 충족되는 순서대로 자동 매수합니다.")
 
         # INITIAL_BUY: 기본 1회분 매수 (설정에 따라)
         if INITIAL_BUY:
@@ -555,9 +517,13 @@ def main():
                     if entry.get("exited", False):
                         logger.info(f"[{t}] 이미 청산된 상태, 초기 매수 스킵.")
                         continue
-                    one_amount = entry.get("target_krw", 0) / entry.get("installments", INSTALLMENTS) if entry.get("installments", INSTALLMENTS) > 0 else 0
+                    one_amount, remaining_budget, remaining_orders = calculate_next_order_amount(total_invest, purchases)
+                    if remaining_orders <= 0 or remaining_budget <= 0:
+                        logger.info(f"[{t}] 남은 매수 회차/예산이 없어 초기 매수를 중단합니다.")
+                        break
                     if one_amount < MIN_KRW_ORDER:
-                        logger.info(f"[{t}] 1회분 금액 {one_amount:.0f}원 < 최소 {MIN_KRW_ORDER}원, 초기 매수 스킵 및 완료 처리.")
+                        logger.info(
+                            f"[{t}] 계산된 매수 금액 {one_amount:.0f}원 < 최소 {MIN_KRW_ORDER}원, 초기 매수 종료.")
                         purchases[t]["completed"] = True
                         save_purchases(purchases)
                         continue
@@ -572,6 +538,7 @@ def main():
                         else:
                             record_purchase_entry(t, {"result": str(resp), "krw": one_amount, "price": None, "amount": None, "timestamp": datetime.utcnow().isoformat() + "Z"})
                         krw_balance -= one_amount
+                        purchases = load_purchases()
                     time.sleep(0.5)
                 except Exception as e:
                     logger.error(f"[{t}] 초기 매수 중 예외: {e}")
@@ -585,6 +552,16 @@ def main():
                 all_done = all((purchases.get(t, {}).get("completed", False) or purchases.get(t, {}).get("exited", False)) for t in COINS)
                 if all_done:
                     logger.info("모든 코인의 분할매수가 완료되었거나 청산됨. 루프를 종료합니다.")
+                    break
+                order_amount, remaining_budget, remaining_orders = calculate_next_order_amount(total_invest, purchases)
+                if remaining_budget < MIN_KRW_ORDER or remaining_orders <= 0:
+                    logger.info(
+                        f"남은 예산 {remaining_budget:.0f}원 또는 잔여 회차 {remaining_orders}가 최소 주문금액 {MIN_KRW_ORDER}원보다 작거나 없습니다. 매수를 종료합니다."
+                    )
+                    for t in COINS:
+                        if t in purchases and not purchases[t].get("completed", False):
+                            purchases[t]["completed"] = True
+                    save_purchases(purchases)
                     break
                 krw_balance = get_krw_balance()
                 for t in COINS:
@@ -604,9 +581,14 @@ def main():
                             logger.info(f"[{t}] 분할매수 완료로 표시.")
                             continue
 
-                        one_amount = entry.get("target_krw", 0) / installments if installments > 0 else 0
+                        one_amount, remaining_budget, remaining_orders = calculate_next_order_amount(total_invest, purchases)
+                        if remaining_orders <= 0 or remaining_budget <= 0:
+                            logger.info(f"[{t}] 남은 예산 또는 회차가 없어 매수를 종료합니다.")
+                            purchases[t]["completed"] = True
+                            save_purchases(purchases)
+                            continue
                         if one_amount < MIN_KRW_ORDER:
-                            logger.info(f"[{t}] 1회분 금액 {one_amount:.0f}원 < 최소 {MIN_KRW_ORDER}원, 자동 스킵 및 완료 처리.")
+                            logger.info(f"[{t}] 계산된 매수 금액 {one_amount:.0f}원 < 최소 {MIN_KRW_ORDER}원, 완료 처리합니다.")
                             purchases[t]["completed"] = True
                             save_purchases(purchases)
                             continue
@@ -626,7 +608,9 @@ def main():
                             save_purchases(purchases)
                             logger.debug(f"[{t}] next_buy_price 초기화 -> {next_price} (DROP_PCT {drop_pct}%)")
 
-                        logger.info(f"[{t}] 현재가 {cur_price:.0f}, next_buy_price {next_price}, 남은회차 {remaining}, DROP_PCT {drop_pct}%")
+                        logger.info(
+                            f"[{t}] 현재가 {cur_price:.0f}, next_buy_price {next_price}, 남은회차 {remaining}, DROP_PCT{drop_pct}%, 매수 금액 {one_amount:.0f} KRW"
+                        )
                         # Trigger if price <= next_buy_price
                         if cur_price <= float(next_price):
                             if krw_balance < one_amount:
@@ -647,6 +631,7 @@ def main():
                                 else:
                                     record_purchase_entry(t, {"result": str(resp), "krw": one_amount, "price": cur_price, "amount": None, "timestamp": datetime.utcnow().isoformat() + "Z"})
                                 krw_balance -= one_amount
+                                purchases = load_purchases()
                                 # 매수 직후 목표수익 달성 여부 확인(즉시 엑시트)
                                 exit_ok, stats = should_exit(t)
                                 if exit_ok and stats["held_amount"] > 0:
