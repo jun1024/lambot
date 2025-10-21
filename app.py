@@ -65,6 +65,15 @@ stdout_reader_thread = None
 stop_reader_event = threading.Event()
 
 
+@app.after_request
+def add_security_headers(response):
+    """Attach basic security headers for dashboard responses."""
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Cache-Control", "no-store")
+    return response
+
+
 # --- env helpers ---
 def load_env_file(path=ENV_FILE):
     env = {}
